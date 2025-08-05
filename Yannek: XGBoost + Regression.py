@@ -1,11 +1,16 @@
 # %%
 # SESSION SETUP ================================================================
+# Install packages
+# !pip install xgboost
+# !pip install catboost
+
 # Import packages
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import xgboost as xgb
+import datetime as dt
 
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
@@ -13,7 +18,8 @@ from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.model_selection import train_test_split
 from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
-from sklearn.metrics import accuracy_score, recall_score, precision_score, mean_squared_error, roc_auc_score
+from sklearn.metrics import accuracy_score, recall_score, precision_score, mean_squared_error, roc_auc_score, mean_absolute_error, r2_score
+from catboost import CatBoostClassifier
 
 # Load data
 flights_import = pd.read_csv('./data/flights_train_cleaned.csv')
@@ -42,6 +48,22 @@ flights['od'] = flights['od'].astype('category')
 flights['airline'] = flights['airline'].astype('category')
 flights['flt_type'] = flights['flt_type'].astype('category')
 flights['daypart'] = flights['daypart'].astype('category')
+flights['year'] = flights['datop'].dt.strftime('%Y')
+flights['year'] = flights['year'].astype('int')
+
+# -- DON'T DROP! Actually deteriorated performance 
+# Dropping features
+# flights = flights.drop(['datop', 'dep_country', 'arr_country', 'std', 'sta'],
+#                        axis=1)
+
+# SET CUT OFF FOR 500 MIN DELAY
+flights = flights.loc[flights['target'] <= 500, :]
+
+# Reorder columns
+flights = flights.reindex(columns=[
+    'target', 'depstn', 'arrstn', 'od', 'airline', 'status', 'flt_type',
+    'scheduled_duration_min', 'year', 'month', 'weekofyear', 'is_weekend',
+    'dep_hour', 'arr_hour', 'daypart'])
 
 # Define features and target
 features = flights.drop('target', axis=1)
@@ -124,7 +146,10 @@ def evaluate_model(model, pipe, X_train, y_train, X_test, y_test):
     Evalutates the performance of piped machine learning models.
 
     Args:
-        model (str): 'xgboost' for XGBoost model
+        model (str):
+            *'xgb'* for XGBoost model\n
+            *'ln'* for linear regression model\n
+            *'cb'* for CatBoost classifier
         pipe (pipeline object): Model pipeline object
         X_train (dataframe): Matrix of values for training features
         y_train (array): Array of values for training label
@@ -137,7 +162,7 @@ def evaluate_model(model, pipe, X_train, y_train, X_test, y_test):
         environment.
     """
 
-    if model == 'xgboost':
+    if model == 'xgb':
         
         # Fit model and predict y-values
         pipe.fit(X_train, y_train)
@@ -151,10 +176,10 @@ def evaluate_model(model, pipe, X_train, y_train, X_test, y_test):
         xgb_auc = roc_auc_score(y_test, y_pred_xgb)
 
         # Print results
-        print('Accuracy of XGBoost Classifier:  ', round(xgb_accuracy, 2))
-        print('Recall of XGBoost Classifier:    ', round(xgb_recall, 2))
-        print('Precision of XGBoost Classifier: ', round(xgb_precision, 2))
-        print('AUC score of XGBoost Classifier: ', round(xgb_auc, 2))
+        print('Accuracy of XGBoost classifier:  ', round(xgb_accuracy, 2))
+        print('Recall of XGBoost classifier:    ', round(xgb_recall, 2))
+        print('Precision of XGBoost classifier: ', round(xgb_precision, 2))
+        print('AUC score of XGBoost classifier: ', round(xgb_auc, 2))
 
         # Return evaluation metrics as variables
         return {
@@ -165,72 +190,104 @@ def evaluate_model(model, pipe, X_train, y_train, X_test, y_test):
             'xgb_auc': xgb_auc
         }
     
-    elif model == 'linear regression':
+    elif model == 'ln':
+
         # Fit model and predict y-values
         pipe.fit(X_train, y_train)
         y_pred_ln = ln_pipe.predict(X_test)
 
         # Compute model metrics
         ln_rmse = np.sqrt(mean_squared_error(y_test, y_pred_ln))
-        ln_auc = roc_auc_score(y_test, y_pred_ln)
+        ln_mae = mean_absolute_error(y_test, y_pred_ln)
+        ln_r2 = r2_score(y_test, y_pred_ln)
 
         # Print results
-        print('RMSE of linear regression:      ', round(ln_rmse, 2))
-        print('AUC score of linear regression: ', round(ln_auc, 2))
+        print('RMSE of linear regression: ', round(ln_rmse, 2))
+        print('MAE of linear regression:  ', round(ln_mae, 2))
+        print('R2 of linear regression:   ', round(ln_r2, 2))
 
         # Return evaluation metrics as variables
         return {
             'ln_rmse': ln_rmse,
-            'ln_auc': ln_auc
+        }
+    
+    elif model == 'cb':
+        
+         # Fit model and predict y-values
+        pipe.fit(X_train, y_train)
+        y_pred_cb = cat_pipe.predict(X_test)
+
+        # Compute model metrics
+        cb_accuracy = accuracy_score(y_test, y_pred_cb)
+        cb_recall = recall_score(y_test, y_pred_cb)
+        cb_precision = precision_score(y_test, y_pred_cb)
+        cb_auc = roc_auc_score(y_test, y_pred_cb)
+
+        # Print results
+        print('Accuracy score of CatBoost classifier: ', round(cb_accuracy, 2))
+        print('Recall score of CatBoost classifier: ', round(cb_recall, 2))
+        print('Precision score of CatBoost classifier: ', round(cb_precision, 2))
+        print('AUC score of CatBoost classifier: ', round(cb_auc, 2))
+
+        # Return evaluation metrics as variables
+        return {
+            'cb_accuracy': cb_accuracy,
+            'cb_recall': cb_recall,
+            'cb_precision': cb_precision,
+            'cb_auc': cb_auc
         }
 
     else:
         print('Please specify the type of model you want to evaluate.')
 
-evaluate_model('xgboost', xgb_pipe, X_train, y_train, X_test,
-               y_test)
+print('Performance of default XGBoost model:')
+evaluate_model('xgb', xgb_pipe, X_train, y_train, X_test, y_test)
 
 
 # %%
 # TUNE XGBOOST HYPERPARAMETERS =================================================
 # Define the parameter grid
-param_grid = {
-    'xgb_classification__n_estimators': [100, 200, 300, 400, 500, 1000],
-    'xgb_classification__max_depth': [2, 3, 5, 7, 9, 10],
-    'xgb_classification__learning_rate': [0.01, 0.02, 0.03, 0.05, 0.1, 0.2, 0.3],
-    'xgb_classification__subsample': [0.5, 0.75, 1.0],
-    'xgb_classification__colsample_bytree': [0.5, 0.75, 1.0],
-    'xgb_classification__gamma': [0.1, 0.5, 1, 3],
-    'xgb_classification__reg_alpha': [0.1, 0.3, 0.5, 0.8, 1, 10],
-    'xgb_classification__reg_lambda': [0.1, 0.3, 0.5, 0.8, 1, 10]
-}
+# param_grid = {
+#     'xgb_classification__n_estimators': [100, 200, 300, 400, 500, 1000],
+#     'xgb_classification__max_depth': [2, 3, 5, 7, 9, 10],
+#     'xgb_classification__learning_rate': [0.01, 0.02, 0.03, 0.05, 0.1, 0.2, 0.3],
+#     'xgb_classification__subsample': [0.5, 0.75, 1.0],
+#     'xgb_classification__colsample_bytree': [0.5, 0.75, 1.0],
+#     'xgb_classification__gamma': [0.1, 0.5, 1, 3],
+#     'xgb_classification__reg_alpha': [0.1, 0.3, 0.5, 0.8, 1, 10],
+#     'xgb_classification__reg_lambda': [0.1, 0.3, 0.5, 0.8, 1, 10]
+# }
 
-# Create GridSearchCV object
-random_search = RandomizedSearchCV(
-    estimator=xgb_pipe,
-    param_distributions=param_grid,
-    scoring='roc_auc',
-    cv=5,
-    n_jobs=-1,
-    verbose=2
-)
+# # Create GridSearchCV object
+# random_search = RandomizedSearchCV(
+#     estimator=xgb_pipe,
+#     param_distributions=param_grid,
+#     scoring='roc_auc',
+#     cv=5,
+#     n_jobs=-1,
+#     verbose=2
+# )
 
-# Fit on training data
-random_search.fit(X_train, y_train)
+# # Fit on training data
+# random_search.fit(X_train, y_train)
 
-print("Best XGBoost parameters:            ", random_search.best_params_)
-print("Best XGBoost cross-validation score:", random_search.best_score_)
+# print("Best XGBoost parameters:             ", random_search.best_params_)
+# print("Best XGBoost cross-validation score: ", random_search.best_score_)
 
-# Evaluate on test set
-best_xgb_model = random_search.best_estimator_
-y_pred_best_xgb = best_xgb_model.predict(X_test)
+# # Evaluate on test set
+# best_xgb_model = random_search.best_estimator_
+# y_pred_best_xgb = best_xgb_model.predict(X_test)
 
-evaluate_model('xgboost', best_xgb_model, X_train, y_train, X_test,
-               y_test)
+# print('Performance of XGBoost model with tuned hyperparameters:')
+# evaluate_model('xgb', best_xgb_model, X_train, y_train, X_test, y_test)
 
 
 # %%
 # TRAIN REGRESSION MODEL =======================================================
+# Split data again but this time with numeric target
+X_train, X_test, y_train, y_test = train_test_split(
+    features, target_num, test_size=0.3, random_state=RSEED)
+
 # Add XGBoost prediction as column to X train and X test data
 X_train['xgb_pred'] = best_xgb_model.predict(X_train)
 X_test['xgb_pred'] = best_xgb_model.predict(X_test)
@@ -244,12 +301,11 @@ ln_pipe = Pipeline([
 # Train model
 ln_pipe.fit(X_train, y_train)
 
-print('Combined performance of XGBoost + linear regression:')
-evaluate_model('linear regression', ln_pipe, X_train, y_train, X_test,
-               y_test)
+print('Combined performance of tuned XGBoost + linear regression:')
+evaluate_model('ln', ln_pipe, X_train, y_train, X_test, y_test)
 
-# ----
+
+# END OF MAIN ANALYIS PART =====================================================
+# Final note:
 # Comparing RMSE and AUC for the linear model with/ -out predicted XGBoost
 # values didn't indicate any performance improvement.
-# ----
-
